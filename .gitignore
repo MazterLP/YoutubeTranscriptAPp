@@ -1,0 +1,10 @@
+cookies.txt
+output/
+.venv/
+__pycache__/
+*.pyc
+*.log
+_temp_audio/
+*.egg-info/
+dist/
+build/
