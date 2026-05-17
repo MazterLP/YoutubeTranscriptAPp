@@ -58,8 +58,17 @@ step "Checking FFmpeg"
 if command -v ffmpeg &>/dev/null; then
     ok "$(ffmpeg -version 2>&1 | head -1)"
 else
-    warn "FFmpeg not found — the Whisper fallback phase will fail."
-    warn "Install: sudo apt install ffmpeg"
+    warn "FFmpeg not found — installing..."
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y ffmpeg
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y ffmpeg
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm ffmpeg
+    else
+        warn "Could not auto-install FFmpeg. Install manually: sudo apt install ffmpeg"
+    fi
+    command -v ffmpeg &>/dev/null && ok "$(ffmpeg -version 2>&1 | head -1)" || warn "FFmpeg install may have failed — Whisper fallback will not work"
 fi
 
 # ── 5. Clone or update repo ───────────────────────────────────────────────────
@@ -93,6 +102,10 @@ DESKTOP_FILE="$HOME/Desktop/youtube-transcript.desktop"
 APPLICATIONS_FILE="$HOME/.local/share/applications/youtube-transcript.desktop"
 VENV_PYTHON="$INSTALL_DIR/.venv/bin/python3"
 
+ICO_FILE="$INSTALL_DIR/icons8-youtube-studio-100.ico"
+ICON_LINE=""
+[ -f "$ICO_FILE" ] && ICON_LINE="Icon=$ICO_FILE"
+
 DESKTOP_CONTENT="[Desktop Entry]
 Version=1.0
 Type=Application
@@ -101,7 +114,8 @@ Comment=Download and transcribe YouTube channel videos
 Exec=$VENV_PYTHON $INSTALL_DIR/app.py
 Path=$INSTALL_DIR
 Terminal=false
-Categories=Utility;"
+Categories=Utility;
+$ICON_LINE"
 
 mkdir -p "$HOME/.local/share/applications"
 echo "$DESKTOP_CONTENT" > "$APPLICATIONS_FILE"
@@ -110,6 +124,8 @@ chmod +x "$APPLICATIONS_FILE"
 if [ -d "$HOME/Desktop" ]; then
     echo "$DESKTOP_CONTENT" > "$DESKTOP_FILE"
     chmod +x "$DESKTOP_FILE"
+    # Trust the launcher so GNOME lets users double-click it
+    command -v gio &>/dev/null && gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
     ok "Desktop launcher: $DESKTOP_FILE"
 fi
 ok "App launcher registered: $APPLICATIONS_FILE"
