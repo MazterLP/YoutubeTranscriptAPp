@@ -84,7 +84,7 @@ ok "Repository ready"
 step "Creating Python virtual environment"
 
 # Remove broken venv from a previous failed install
-if [ -d "$INSTALL_DIR/.venv" ] && [ ! -f "$INSTALL_DIR/.venv/bin/python3" ]; then
+if [ -d "$INSTALL_DIR/.venv" ] && { [ ! -f "$INSTALL_DIR/.venv/bin/python3" ] || [ ! -f "$INSTALL_DIR/.venv/bin/pip" ]; }; then
     warn "Broken venv detected — removing..."
     rm -rf "$INSTALL_DIR/.venv"
 fi
