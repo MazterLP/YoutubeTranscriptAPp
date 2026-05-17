@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 # YouTube Transcript Downloader — Linux/macOS Installer
-# Usage (one-liner):
+# One-liner:
 #   curl -fsSL https://raw.githubusercontent.com/MazterLP/YoutubeTranscriptAPp/main/install.sh | bash
-# Or run directly:
-#   bash install.sh
 
 set -e
 
@@ -11,10 +9,22 @@ REPO_URL="https://github.com/MazterLP/YoutubeTranscriptAPp.git"
 INSTALL_DIR="$HOME/YoutubeTranscriptAPp"
 
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
-step()  { echo -e "\n${CYAN}==> $*${NC}"; }
-ok()    { echo -e "    ${GREEN}OK  $*${NC}"; }
-warn()  { echo -e "    ${YELLOW}WARN $*${NC}"; }
-fail()  { echo -e "    ${RED}FAIL $*${NC}"; exit 1; }
+step() { echo -e "\n${CYAN}==> $*${NC}"; }
+ok()   { echo -e "    ${GREEN}OK  $*${NC}"; }
+warn() { echo -e "    ${YELLOW}WARN $*${NC}"; }
+fail() { echo -e "    ${RED}FAIL $*${NC}"; exit 1; }
+
+pkg_install() {
+    if command -v apt-get &>/dev/null; then
+        sudo apt-get install -y "$@"
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y "$@"
+    elif command -v pacman &>/dev/null; then
+        sudo pacman -S --noconfirm "$@"
+    else
+        warn "Cannot auto-install $* — install manually then re-run."
+    fi
+}
 
 echo -e "${CYAN}
   ┌─────────────────────────────────────────────┐
@@ -22,54 +32,43 @@ echo -e "${CYAN}
   └─────────────────────────────────────────────┘
 ${NC}"
 
-# ── 1. Check Git ──────────────────────────────────────────────────────────────
+# ── 1. Git ────────────────────────────────────────────────────────────────────
 step "Checking Git"
-command -v git &>/dev/null || fail "Git not found. Install: sudo apt install git"
+if ! command -v git &>/dev/null; then
+    warn "Git not found — installing..."
+    pkg_install git
+fi
 ok "$(git --version)"
 
-# ── 2. Check Python 3.8+ ─────────────────────────────────────────────────────
+# ── 2. Python 3.8+ ───────────────────────────────────────────────────────────
 step "Checking Python"
 PY=$(command -v python3 || command -v python || true)
-[ -n "$PY" ] || fail "Python 3 not found. Install: sudo apt install python3"
-PYVER=$($PY -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-python3 -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" \
-    || fail "Python $PYVER found but 3.8+ required."
-ok "Python $PYVER at $PY"
+if [ -z "$PY" ]; then
+    warn "Python 3 not found — installing..."
+    pkg_install python3
+    PY=$(command -v python3)
+fi
+$PY -c "import sys; sys.exit(0 if sys.version_info >= (3,8) else 1)" \
+    || fail "Python $($PY --version) found but 3.8+ is required."
+ok "$($PY --version) at $PY"
 
-# ── 3. Check python3-tk (Tkinter GUI) ────────────────────────────────────────
+# ── 3. Tkinter ────────────────────────────────────────────────────────────────
 step "Checking Tkinter"
-if $PY -c "import tkinter" &>/dev/null; then
-    ok "Tkinter available"
-else
-    warn "Tkinter not found — installing python3-tk..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y python3-tk
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y python3-tkinter
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm tk
-    else
-        warn "Could not auto-install Tkinter. Install manually: sudo apt install python3-tk"
-    fi
+if ! $PY -c "import tkinter" &>/dev/null; then
+    warn "Tkinter not found — installing..."
+    pkg_install python3-tk
 fi
+ok "Tkinter available"
 
-# ── 4. Check FFmpeg ───────────────────────────────────────────────────────────
+# ── 4. FFmpeg ─────────────────────────────────────────────────────────────────
 step "Checking FFmpeg"
-if command -v ffmpeg &>/dev/null; then
-    ok "$(ffmpeg -version 2>&1 | head -1)"
-else
+if ! command -v ffmpeg &>/dev/null; then
     warn "FFmpeg not found — installing..."
-    if command -v apt-get &>/dev/null; then
-        sudo apt-get install -y ffmpeg
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y ffmpeg
-    elif command -v pacman &>/dev/null; then
-        sudo pacman -S --noconfirm ffmpeg
-    else
-        warn "Could not auto-install FFmpeg. Install manually: sudo apt install ffmpeg"
-    fi
-    command -v ffmpeg &>/dev/null && ok "$(ffmpeg -version 2>&1 | head -1)" || warn "FFmpeg install may have failed — Whisper fallback will not work"
+    pkg_install ffmpeg
 fi
+command -v ffmpeg &>/dev/null \
+    && ok "$(ffmpeg -version 2>&1 | head -1)" \
+    || warn "FFmpeg install may have failed — Whisper fallback will not work"
 
 # ── 5. Clone or update repo ───────────────────────────────────────────────────
 step "Setting up repository at $INSTALL_DIR"
@@ -81,42 +80,45 @@ else
 fi
 ok "Repository ready"
 
-# ── 6. Create virtual environment ─────────────────────────────────────────────
+# ── 6. Python venv ────────────────────────────────────────────────────────────
 step "Creating Python virtual environment"
-if ! $PY -m venv --help &>/dev/null 2>&1; then
-    warn "python3-venv not found — installing..."
-    if command -v apt-get &>/dev/null; then
-        PYVER_SHORT=$($PY -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
-        sudo apt-get install -y "python${PYVER_SHORT}-venv" 2>/dev/null \
-            || sudo apt-get install -y python3-venv
-    elif command -v dnf &>/dev/null; then
-        sudo dnf install -y python3-venv
-    elif command -v pacman &>/dev/null; then
-        true  # venv is bundled with python on Arch
-    fi
+
+# Remove broken venv from a previous failed install
+if [ -d "$INSTALL_DIR/.venv" ] && [ ! -f "$INSTALL_DIR/.venv/bin/python3" ]; then
+    warn "Broken venv detected — removing..."
+    rm -rf "$INSTALL_DIR/.venv"
 fi
+
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
+    # Ensure venv module is available
+    if ! $PY -m venv --help &>/dev/null 2>&1; then
+        warn "python3-venv not found — installing..."
+        PYVER=$($PY -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get install -y "python${PYVER}-venv" 2>/dev/null \
+                || sudo apt-get install -y python3-venv
+        else
+            pkg_install python3-venv
+        fi
+    fi
     $PY -m venv "$INSTALL_DIR/.venv"
     ok "Created $INSTALL_DIR/.venv"
 else
     ok "venv already exists — skipping"
 fi
 
-# ── 7. Install dependencies ───────────────────────────────────────────────────
+# ── 7. Python dependencies ────────────────────────────────────────────────────
 step "Installing dependencies (yt-dlp, faster-whisper, pandas)"
 "$INSTALL_DIR/.venv/bin/pip" install --upgrade pip -q
 "$INSTALL_DIR/.venv/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
 ok "Dependencies installed"
 
-# ── 8. Desktop launcher (.desktop file for GNOME/KDE) ─────────────────────────
+# ── 8. Desktop launcher ───────────────────────────────────────────────────────
 step "Creating desktop launcher"
-DESKTOP_FILE="$HOME/Desktop/youtube-transcript.desktop"
-APPLICATIONS_FILE="$HOME/.local/share/applications/youtube-transcript.desktop"
 VENV_PYTHON="$INSTALL_DIR/.venv/bin/python3"
-
+APPLICATIONS_FILE="$HOME/.local/share/applications/youtube-transcript.desktop"
+DESKTOP_FILE="$HOME/Desktop/youtube-transcript.desktop"
 ICO_FILE="$INSTALL_DIR/icons8-youtube-studio-100.ico"
-ICON_LINE=""
-[ -f "$ICO_FILE" ] && ICON_LINE="Icon=$ICO_FILE"
 
 DESKTOP_CONTENT="[Desktop Entry]
 Version=1.0
@@ -127,33 +129,31 @@ Exec=$VENV_PYTHON $INSTALL_DIR/app.py
 Path=$INSTALL_DIR
 Terminal=false
 Categories=Utility;
-$ICON_LINE"
+$([ -f "$ICO_FILE" ] && echo "Icon=$ICO_FILE")"
 
 mkdir -p "$HOME/.local/share/applications"
-echo "$DESKTOP_CONTENT" > "$APPLICATIONS_FILE"
+printf '%s\n' "$DESKTOP_CONTENT" > "$APPLICATIONS_FILE"
 chmod +x "$APPLICATIONS_FILE"
 
 if [ -d "$HOME/Desktop" ]; then
-    echo "$DESKTOP_CONTENT" > "$DESKTOP_FILE"
+    printf '%s\n' "$DESKTOP_CONTENT" > "$DESKTOP_FILE"
     chmod +x "$DESKTOP_FILE"
-    # Trust the launcher so GNOME lets users double-click it
     command -v gio &>/dev/null && gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
     ok "Desktop launcher: $DESKTOP_FILE"
 fi
-ok "App launcher registered: $APPLICATIONS_FILE"
+ok "App launcher registered (app menu)"
 
-# ── 9. Done ────────────────────────────────────────────────────────────────────
+# ── 9. Done ───────────────────────────────────────────────────────────────────
 echo -e "${GREEN}
   ┌──────────────────────────────────────────────────────────┐
   │  Installation complete!                                   │
   │                                                           │
-  │  Run the app:                                             │
+  │  Launch the app:                                          │
   │    Double-click 'YouTube Transcript' on your Desktop      │
   │  Or from terminal:                                        │
-  │    cd $INSTALL_DIR
-  │    ./.venv/bin/python3 app.py                             │
+  │    $INSTALL_DIR/.venv/bin/python3 $INSTALL_DIR/app.py    │
   │                                                           │
-  │  (Optional) Put cookies.txt in $INSTALL_DIR               │
-  │  for faster downloads and fewer rate-limits.              │
+  │  Tip: add cookies.txt to $INSTALL_DIR                     │
+  │  to avoid YouTube rate-limits.                            │
   └──────────────────────────────────────────────────────────┘
 ${NC}"
