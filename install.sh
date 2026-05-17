@@ -83,6 +83,18 @@ ok "Repository ready"
 
 # ── 6. Create virtual environment ─────────────────────────────────────────────
 step "Creating Python virtual environment"
+if ! $PY -m venv --help &>/dev/null 2>&1; then
+    warn "python3-venv not found — installing..."
+    if command -v apt-get &>/dev/null; then
+        PYVER_SHORT=$($PY -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+        sudo apt-get install -y "python${PYVER_SHORT}-venv" 2>/dev/null \
+            || sudo apt-get install -y python3-venv
+    elif command -v dnf &>/dev/null; then
+        sudo dnf install -y python3-venv
+    elif command -v pacman &>/dev/null; then
+        true  # venv is bundled with python on Arch
+    fi
+fi
 if [ ! -d "$INSTALL_DIR/.venv" ]; then
     $PY -m venv "$INSTALL_DIR/.venv"
     ok "Created $INSTALL_DIR/.venv"
