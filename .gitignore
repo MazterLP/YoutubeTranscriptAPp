@@ -1,4 +1,5 @@
 cookies.txt
+.claude/
 output/
 .venv/
 __pycache__/
