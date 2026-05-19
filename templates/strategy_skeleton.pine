@@ -1,0 +1,42 @@
+//@version=6
+strategy("Strategy Name", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=10, initial_capital=10000, commission_type=strategy.commission.percent, commission_value=0.1)
+
+// ─── INPUTS ───────────────────────────────────────────────────────────────────
+ema_fast_len = input.int(9,  "EMA Fast",   minval=1)
+ema_slow_len = input.int(21, "EMA Slow",   minval=1)
+rsi_len      = input.int(14, "RSI Length", minval=1)
+atr_len      = input.int(14, "ATR Length", minval=1)
+sl_mult      = input.float(1.5, "SL ATR Mult", minval=0.1)
+tp_mult      = input.float(3.0, "TP ATR Mult", minval=0.1)
+
+// ─── INDICATORS ───────────────────────────────────────────────────────────────
+ema_fast = ta.ema(close, ema_fast_len)
+ema_slow = ta.ema(close, ema_slow_len)
+rsi      = ta.rsi(close, rsi_len)
+atr      = ta.atr(atr_len)
+
+// ─── SIGNALS ──────────────────────────────────────────────────────────────────
+long_signal  = ta.crossover(ema_fast, ema_slow)  and rsi > 50
+short_signal = ta.crossunder(ema_fast, ema_slow) and rsi < 50
+
+// ─── ENTRIES ──────────────────────────────────────────────────────────────────
+if long_signal
+    strategy.entry("Long", strategy.long)
+if short_signal
+    strategy.entry("Short", strategy.short)
+
+// ─── EXITS ────────────────────────────────────────────────────────────────────
+if strategy.position_size > 0
+    strategy.exit("Long Exit", "Long",
+         stop  = strategy.position_avg_price - atr * sl_mult,
+         limit = strategy.position_avg_price + atr * tp_mult)
+if strategy.position_size < 0
+    strategy.exit("Short Exit", "Short",
+         stop  = strategy.position_avg_price + atr * sl_mult,
+         limit = strategy.position_avg_price - atr * tp_mult)
+
+// ─── PLOTS ────────────────────────────────────────────────────────────────────
+plot(ema_fast, "EMA Fast", color.blue,   1)
+plot(ema_slow, "EMA Slow", color.orange, 1)
+plotshape(long_signal,  "Long",  shape.triangleup,   location.belowbar, color.green, size=size.small)
+plotshape(short_signal, "Short", shape.triangledown, location.abovebar, color.red,   size=size.small)
