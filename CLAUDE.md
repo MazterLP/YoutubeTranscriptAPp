@@ -27,27 +27,29 @@ pip install -r requirements.txt
 
 ## Architecture
 
-The app has two layers: a **Tkinter GUI** (`app.py`) that never blocks, and a **pipeline** (`pipeline/`) that runs in a background `threading.Thread` and communicates back via `queue.Queue`.
+The app has two tabs, each backed by its own pipeline running in a background `threading.Thread` and communicating back via `queue.Queue`.
 
-### Thread model
+### Thread model (shared by both tabs)
 - `App._drain_events()` is scheduled with `root.after(100, ...)` — polls the queue every 100 ms and updates all widgets
-- `Orchestrator.start(cfg)` spawns the daemon thread
-- `Orchestrator.stop()` sets a `threading.Event`; the pipeline exits cooperatively between videos (never mid-transcription)
+- Each orchestrator exposes `start(cfg)` / `stop()` with a `threading.Event`; pipelines exit cooperatively between units of work (never mid-transcription or mid-chunk)
 
-### Pipeline phases (all inside `pipeline/orchestrator.py`)
+---
+
+### Tab 1 — Transcript Downloader (`pipeline/orchestrator.py`)
+
+Three sequential phases:
 
 1. **Channel fetch** (`pipeline/channel.py`): one flat yt-dlp request returns the full video list → `videos.csv`. Automatically normalises channel root URLs to `/videos` tab and recurses into tabs if needed.
 2. **Captions** (`pipeline/captions.py`): per-video, calls `extract_info(download=True)` to download VTT subtitles AND get `upload_date` in one call. Sleeps `random.uniform(sleep_min, sleep_max)` between videos — critical to avoid YouTube 429s. Failures go to in-memory `failed_videos` list.
 3. **Whisper** (`pipeline/whisper_worker.py`): only runs when `failed_videos` is non-empty. Loads `faster-whisper` once (GPU → CPU fallback), uses `ThreadPoolExecutor` with user-configured workers. Each worker: download MP3 → transcribe → delete MP3 → write JSON.
 
-### Key design decisions
+**Key design decisions**
 - `extract_flat="in_playlist"` in channel.py is intentional — `extract_flat=False` makes N per-video requests and triggers rate-limits immediately on anonymous sessions.
 - `captions.py` uses `extract_info(download=True)` not `download()` so we get `upload_date` back without a separate request.
 - Idempotency: both the channel CSV check (header schema + row count) and the per-video glob `*_{video_id}.json` ensure safe re-runs.
 - `cookies.txt` is gitignored; its path defaults to `APP_DIR/cookies.txt` and is optional — the app warns and continues without it.
 
-### Output
-
+**Output**
 ```
 output/{ChannelName}/
   videos.csv                              ← VideoID, URL, Title, Episode
@@ -59,15 +61,57 @@ output/{ChannelName}/
 JSON schema (captions): `video_id, episode, channel, title, url, publish_date, word_count, transcript`
 JSON schema (Whisper adds): `language, metadata{whisper_model, device, lang_prob}, segments[{start, end, text}]`
 
+---
+
+### Tab 2 — Strategy Pipeline (`pipeline/strategy/`)
+
+Four sequential phases driven by `pipeline/strategy/orchestrator.py` (`StrategyOrchestrator`):
+
+1. **Clean** (`cleaner.py`): reads Bronze JSON transcripts, normalises fields, chunks text by word count with overlap → writes Silver JSON files (`output/silver/{video_id}.json`).
+2. **Extract** (`extractor.py`): sends each Silver chunk to Ollama (`qwen3:14b` default) with a structured prompt → parses JSON response → filters by confidence threshold → writes Gold JSON files (`output/gold/{video_id}_strategies.json`).
+3. **Ingest** (`vectorstore.py`): embeds Silver chunks and Gold strategies with `sentence-transformers` → upserts into two ChromaDB collections (`chunks`, `strategies`) at `output/chroma/`.
+4. **Generate / Search** (`pinegen.py`, `rag.py`): user enters a query → RAG search over ChromaDB → top strategies + transcript context sent to Ollama → returns Pine Script v6 code → saved to `output/strategies/{slug}_{date}.pine`.
+
+**Data flow**
+```
+output/{ChannelName}/*.json  (Bronze)
+  └─ cleaner.py ──→  output/silver/*.json
+  └─ extractor.py ──→  output/gold/*_strategies.json
+  └─ vectorstore.py ──→  output/chroma/  (ChromaDB)
+  └─ pinegen.py + rag.py ──→  output/strategies/*.pine
+```
+
+**Key design decisions**
+- Ollama runs locally (`http://localhost:11434`); no remote LLM calls.
+- ChromaDB is a local persistent store; no external vector DB dependency.
+- `vectorstore.py` uses `upsert` — re-running ingest is safe and idempotent.
+- `extractor.py` JSON parsing strips markdown fences before `json.loads` to handle models that wrap output in code blocks.
+- The Pine Script skeleton in `templates/strategy_skeleton.pine` is injected into the generation prompt as a structural guide.
+
+**Models (Pydantic, `models.py`)**
+- `Chunk` — Silver unit: `chunk_id, video_id, title, date, channel, chunk_index, text, start_sec, end_sec`
+- `Strategy` — Gold unit: all extraction fields + `confidence`, `chunk_id`, `video_id`, `title`, `date`
+- `PineResult` — generation output: `query, pine_code, source_strategies, output_path`
+
+---
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `app.py` | Tkinter GUI + event drain loop |
-| `pipeline/orchestrator.py` | Thread, queue, phases coordinator |
+| `app.py` | Tkinter GUI — two-tab layout, event drain loop |
+| `pipeline/orchestrator.py` | Tab 1: thread, queue, transcript phases coordinator |
 | `pipeline/channel.py` | Phase 1: flat channel listing |
 | `pipeline/captions.py` | Phase 2: VTT fetch via yt-dlp |
 | `pipeline/whisper_worker.py` | Phase 3: audio download + faster-whisper |
 | `pipeline/utils.py` | Pure helpers: slugify, parse_date, VTT parse, etc. |
+| `pipeline/strategy/orchestrator.py` | Tab 2: thread, queue, strategy phases coordinator |
+| `pipeline/strategy/cleaner.py` | Phase 1: Bronze → Silver chunking |
+| `pipeline/strategy/extractor.py` | Phase 2: Silver → Gold via Ollama |
+| `pipeline/strategy/vectorstore.py` | Phase 3: Gold + Silver → ChromaDB |
+| `pipeline/strategy/rag.py` | Semantic search over ChromaDB |
+| `pipeline/strategy/pinegen.py` | RAG → Ollama → Pine Script v6 generation |
+| `pipeline/strategy/models.py` | Pydantic models: Chunk, Strategy, PineResult |
+| `templates/strategy_skeleton.pine` | Pine Script v6 template injected into generation prompt |
 | `install.ps1` | Windows one-liner installer |
 | `install.sh` | Linux/macOS installer |
