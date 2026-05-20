@@ -60,6 +60,8 @@ python app.py
 
 ## Usage
 
+### Tab 1 — Transcript Downloader
+
 1. Launch the app (`python app.py` or desktop shortcut)
 2. Paste the channel URL (e.g. `https://www.youtube.com/@SomeChannel`)
 3. Set a channel name for the output folder
@@ -92,6 +94,46 @@ output/
 ```
 
 Videos transcribed via Whisper include two extra fields: `language`, `metadata` (model/device/confidence), and `segments` (timestamped word-level array).
+
+---
+
+### Tab 2 — Strategy Pipeline
+
+Turns downloaded transcripts into searchable trading strategies and generates Pine Script v6 code.
+
+**Four phases (run individually or as a full pipeline):**
+
+1. **Clean** — chunks transcripts into overlapping text windows → `output/silver/`
+2. **Extract** — sends each chunk to an LLM, extracts structured strategy data → `output/gold/`
+3. **Ingest** — embeds chunks and strategies into a local ChromaDB vector store → `output/chroma/`
+4. **Generate** — enter a query → RAG search → LLM generates a Pine Script → `output/strategies/`
+
+**LLM backends** (select via radio button in the GUI):
+
+| Backend | Requirements |
+|---|---|
+| **Ollama** (default) | [Ollama](https://ollama.com) running locally; default model `qwen3:14b` |
+| **Claude API** | `ANTHROPIC_API_KEY` (see below); default model `claude-sonnet-4-6` |
+
+**Setting your API key**
+
+Either paste it directly into the GUI, or create a `.env` file at the project root — the app loads it automatically on startup:
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
+### Importing from an existing database
+
+If your transcripts are stored in a SQLite database (`raw_documents` table), use the included migration script to convert them to the bronze JSON format the pipeline expects:
+
+```powershell
+.\.venv\Scripts\python.exe export_db_to_bronze.py
+```
+
+Edit the `DB_PATH` constant at the top of the script to point to your database. Already-exported files are skipped (idempotent).
 
 ---
 
@@ -139,11 +181,20 @@ Falls back to CPU automatically if no CUDA GPU is detected.
 ## Architecture
 
 ```
-app.py                  Tkinter GUI — polls a queue every 100ms
+app.py                           Tkinter GUI — polls a queue every 100ms
 pipeline/
-  orchestrator.py       Background thread; drives phases 1–3
-  channel.py            Phase 1: flat channel listing (1 HTTP request)
-  captions.py           Phase 2: yt-dlp VTT fetch + info_dict
-  whisper_worker.py     Phase 3: faster-whisper GPU/CPU transcription
-  utils.py              Shared helpers (slugify, dates, VTT parsing)
+  orchestrator.py                Tab 1: background thread, drives phases 1–3
+  channel.py                     Phase 1: flat channel listing (1 HTTP request)
+  captions.py                    Phase 2: yt-dlp VTT fetch + info_dict
+  whisper_worker.py              Phase 3: faster-whisper GPU/CPU transcription
+  utils.py                       Shared helpers (slugify, dates, VTT parsing)
+  strategy/
+    orchestrator.py              Tab 2: background thread, drives strategy phases
+    cleaner.py                   Phase 1: Bronze JSON → chunked Silver JSON
+    extractor.py                 Phase 2: Silver → Gold strategies via LLM
+    vectorstore.py               Phase 3: Silver + Gold → ChromaDB
+    rag.py                       Semantic search over ChromaDB
+    pinegen.py                   RAG → LLM → Pine Script v6
+    models.py                    Pydantic models (Chunk, Strategy, PineResult)
+export_db_to_bronze.py           SQLite → bronze JSON migration utility
 ```
