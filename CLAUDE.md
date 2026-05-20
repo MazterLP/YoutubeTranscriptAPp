@@ -25,12 +25,31 @@ pip install -r requirements.txt
 # Ubuntu also needs: sudo apt install python3-tk ffmpeg
 ```
 
+There is no test suite and no lint configuration in this project.
+
+## Environment variables
+
+`app.py` automatically loads a `.env` file at the project root on startup (key=value format, `#` comments ignored). The only env var the app reads is:
+
+- `ANTHROPIC_API_KEY` — used when the Claude API backend is selected in the Strategy Pipeline tab. Can also be pasted directly into the GUI.
+
+## Utility scripts
+
+**`export_db_to_bronze.py`** — one-shot migration from a specific SQLite database (`~/Documents/Fede_Projects/Trading Research/db/trading_research.db`, table `raw_documents`) to bronze JSON files in `output/bronze/`. Idempotent — already-exported files are skipped. Run with:
+
+```powershell
+.\.venv\Scripts\python.exe export_db_to_bronze.py
+```
+
+---
+
 ## Architecture
 
 The app has two tabs, each backed by its own pipeline running in a background `threading.Thread` and communicating back via `queue.Queue`.
 
 ### Thread model (shared by both tabs)
 - `App._drain_events()` is scheduled with `root.after(100, ...)` — polls the queue every 100 ms and updates all widgets
+- Both orchestrators emit the same event schema: `{"kind": "log"|"phase"|"progress"|"done", "payload": ...}`
 - Each orchestrator exposes `start(cfg)` / `stop()` with a `threading.Event`; pipelines exit cooperatively between units of work (never mid-transcription or mid-chunk)
 
 ---
@@ -67,10 +86,18 @@ JSON schema (Whisper adds): `language, metadata{whisper_model, device, lang_prob
 
 Four sequential phases driven by `pipeline/strategy/orchestrator.py` (`StrategyOrchestrator`):
 
-1. **Clean** (`cleaner.py`): reads Bronze JSON transcripts, normalises fields, chunks text by word count with overlap → writes Silver JSON files (`output/silver/{video_id}.json`).
-2. **Extract** (`extractor.py`): sends each Silver chunk to Ollama (`qwen3:14b` default) with a structured prompt → parses JSON response → filters by confidence threshold → writes Gold JSON files (`output/gold/{video_id}_strategies.json`).
+1. **Clean** (`cleaner.py`): reads Bronze JSON transcripts, normalises fields, chunks text by word count (`max_words=300`, `overlap_words=50`) → writes Silver JSON files (`output/silver/{video_id}.json`).
+2. **Extract** (`extractor.py`): sends each Silver chunk to an LLM with a structured prompt → parses JSON response → filters by confidence threshold → writes Gold JSON files (`output/gold/{video_id}_strategies.json`).
 3. **Ingest** (`vectorstore.py`): embeds Silver chunks and Gold strategies with `sentence-transformers` → upserts into two ChromaDB collections (`chunks`, `strategies`) at `output/chroma/`.
-4. **Generate / Search** (`pinegen.py`, `rag.py`): user enters a query → RAG search over ChromaDB → top strategies + transcript context sent to Ollama → returns Pine Script v6 code → saved to `output/strategies/{slug}_{date}.pine`.
+4. **Generate / Search** (`pinegen.py`, `rag.py`): user enters a query → RAG search over ChromaDB → top strategies + transcript context sent to LLM → returns Pine Script v6 code → saved to `output/strategies/{slug}_{date}.pine`.
+
+**LLM backends**
+
+Both `extractor.py` and `pinegen.py` support two backends, selected via `StrategyConfig.backend`:
+- `"ollama"` (default) — local Ollama instance at `http://localhost:11434`, model `qwen3:14b`
+- `"claude"` — Anthropic API via `anthropic` SDK; requires `claude_api_key` and `claude_model` (default `claude-sonnet-4-6`)
+
+The GUI exposes radio buttons to switch backends; `extractor.py` calls `_call_ollama()` or `_call_claude()` based on this flag.
 
 **Data flow**
 ```
@@ -82,9 +109,7 @@ output/{ChannelName}/*.json  (Bronze)
 ```
 
 **Key design decisions**
-- Ollama runs locally (`http://localhost:11434`); no remote LLM calls.
-- ChromaDB is a local persistent store; no external vector DB dependency.
-- `vectorstore.py` uses `upsert` — re-running ingest is safe and idempotent.
+- ChromaDB is a local persistent store; `vectorstore.py` uses `upsert` — re-running ingest is safe and idempotent.
 - `extractor.py` JSON parsing strips markdown fences before `json.loads` to handle models that wrap output in code blocks.
 - The Pine Script skeleton in `templates/strategy_skeleton.pine` is injected into the generation prompt as a structural guide.
 
@@ -100,6 +125,7 @@ output/{ChannelName}/*.json  (Bronze)
 | File | Purpose |
 |---|---|
 | `app.py` | Tkinter GUI — two-tab layout, event drain loop |
+| `export_db_to_bronze.py` | One-shot SQLite → bronze JSON migration utility |
 | `pipeline/orchestrator.py` | Tab 1: thread, queue, transcript phases coordinator |
 | `pipeline/channel.py` | Phase 1: flat channel listing |
 | `pipeline/captions.py` | Phase 2: VTT fetch via yt-dlp |
@@ -107,10 +133,10 @@ output/{ChannelName}/*.json  (Bronze)
 | `pipeline/utils.py` | Pure helpers: slugify, parse_date, VTT parse, etc. |
 | `pipeline/strategy/orchestrator.py` | Tab 2: thread, queue, strategy phases coordinator |
 | `pipeline/strategy/cleaner.py` | Phase 1: Bronze → Silver chunking |
-| `pipeline/strategy/extractor.py` | Phase 2: Silver → Gold via Ollama |
+| `pipeline/strategy/extractor.py` | Phase 2: Silver → Gold via Ollama or Claude API |
 | `pipeline/strategy/vectorstore.py` | Phase 3: Gold + Silver → ChromaDB |
 | `pipeline/strategy/rag.py` | Semantic search over ChromaDB |
-| `pipeline/strategy/pinegen.py` | RAG → Ollama → Pine Script v6 generation |
+| `pipeline/strategy/pinegen.py` | RAG → LLM → Pine Script v6 generation |
 | `pipeline/strategy/models.py` | Pydantic models: Chunk, Strategy, PineResult |
 | `templates/strategy_skeleton.pine` | Pine Script v6 template injected into generation prompt |
 | `install.ps1` | Windows one-liner installer |
