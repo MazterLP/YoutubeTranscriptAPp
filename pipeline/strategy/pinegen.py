@@ -1,12 +1,10 @@
-"""Generate PineScript v6 strategies using RAG + Ollama."""
+"""Generate PineScript v6 strategies using RAG + Ollama or Claude API."""
 from __future__ import annotations
 import json
 import re
 from datetime import date
 from pathlib import Path
 from typing import Callable
-
-import ollama
 
 from .models import PineResult
 from .rag import fetch_top_strategies, search
@@ -62,6 +60,8 @@ def generate(
     temperature: float,
     timeout: int,
     log: Callable[[str], None] = print,
+    backend: str = "ollama",
+    claude_api_key: str = "",
 ) -> PineResult:
     skeleton = template_path.read_text(encoding="utf-8") if template_path.exists() else ""
     strategies = fetch_top_strategies(query, chroma_path, embed_model, gold_dir)
@@ -71,21 +71,41 @@ def generate(
         for r in raw_chunks
     )
 
-    client = ollama.Client(host=base_url, timeout=timeout)
-    resp = client.chat(
-        model=model,
-        messages=[
-            {"role": "system", "content": _SYSTEM},
-            {"role": "user", "content": _USER_TPL.format(
-                query=query,
-                strategies=json.dumps(strategies, indent=2, ensure_ascii=False),
-                context=context,
-                skeleton=skeleton,
-            )},
-        ],
-        options={"temperature": temperature},
+    prompt = _USER_TPL.format(
+        query=query,
+        strategies=json.dumps(strategies, indent=2, ensure_ascii=False),
+        context=context,
+        skeleton=skeleton,
     )
-    pine_code = resp["message"]["content"].strip()
+
+    if backend == "claude":
+        import anthropic
+        client = anthropic.Anthropic(api_key=claude_api_key)
+        resp = client.messages.create(
+            model=model,
+            max_tokens=4096,
+            temperature=temperature,
+            system=_SYSTEM,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        pine_code = resp.content[0].text.strip()
+    else:
+        import ollama
+        client = ollama.Client(host=base_url, timeout=timeout)
+        # Stream to avoid read-timeout on slow CPU inference
+        chunks = client.chat(
+            model=model,
+            messages=[
+                {"role": "system", "content": _SYSTEM},
+                {"role": "user", "content": prompt},
+            ],
+            options={"temperature": temperature},
+            stream=True,
+        )
+        parts = []
+        for chunk in chunks:
+            parts.append(chunk.message.content)
+        pine_code = "".join(parts).strip()
     pine_code = re.sub(r"^```(?:pine|pinescript)?\s*", "", pine_code)
     pine_code = re.sub(r"\s*```$", "", pine_code).strip()
 

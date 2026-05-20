@@ -23,11 +23,14 @@ class StrategyConfig:
     ollama_model: str = "qwen3:14b"
     ollama_base_url: str = "http://localhost:11434"
     ollama_temperature: float = 0.1
-    ollama_timeout: int = 120
+    ollama_timeout: int = 600
     embed_model: str = "all-MiniLM-L6-v2"
     max_words: int = 300
     overlap_words: int = 50
     min_confidence: float = 0.6
+    backend: str = "ollama"          # "ollama" or "claude"
+    claude_api_key: str = ""
+    claude_model: str = "claude-sonnet-4-6"
 
 
 class StrategyOrchestrator:
@@ -95,12 +98,13 @@ class StrategyOrchestrator:
                 return
 
             # Step 2: Extract
+            lm = cfg.claude_model if cfg.backend == "claude" else cfg.ollama_model
             self._emit("phase", "Extract")
-            self._log(f"Extracting strategies with {cfg.ollama_model} ...")
+            self._log(f"Extracting strategies with {cfg.backend}:{lm} ...")
             strategies = extract_all(
                 silver_dir=cfg.silver_dir,
                 gold_dir=cfg.gold_dir,
-                model=cfg.ollama_model,
+                model=lm,
                 base_url=cfg.ollama_base_url,
                 temperature=cfg.ollama_temperature,
                 timeout=cfg.ollama_timeout,
@@ -108,6 +112,8 @@ class StrategyOrchestrator:
                 log=self._log,
                 on_progress=lambda d, t: self._emit("progress", {"done": d, "total": t}),
                 stop_check=self.stop_event.is_set,
+                backend=cfg.backend,
+                claude_api_key=cfg.claude_api_key,
             )
             self._log(f"Total: {len(strategies)} strategies saved")
             if self.stop_event.is_set():
@@ -135,8 +141,9 @@ class StrategyOrchestrator:
     def _run_generate(self, cfg: StrategyConfig, query: str) -> None:
         try:
             from .pinegen import generate
+            lm = cfg.claude_model if cfg.backend == "claude" else cfg.ollama_model
             self._emit("phase", "Generate")
-            self._log(f"Generating Pine Script for: '{query}' ...")
+            self._log(f"Generating Pine Script for: '{query}' ({cfg.backend}:{lm}) ...")
             result = generate(
                 query=query,
                 chroma_path=cfg.chroma_path,
@@ -144,11 +151,13 @@ class StrategyOrchestrator:
                 gold_dir=cfg.gold_dir,
                 strategies_dir=cfg.strategies_dir,
                 template_path=cfg.template_path,
-                model=cfg.ollama_model,
+                model=lm,
                 base_url=cfg.ollama_base_url,
                 temperature=cfg.ollama_temperature,
                 timeout=cfg.ollama_timeout,
                 log=self._log,
+                backend=cfg.backend,
+                claude_api_key=cfg.claude_api_key,
             )
             if result.source_strategies:
                 self._log(f"Based on: {', '.join(result.source_strategies)}")

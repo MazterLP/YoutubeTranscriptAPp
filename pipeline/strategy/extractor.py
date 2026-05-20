@@ -1,11 +1,9 @@
-"""Extract trading strategies from chunks using Ollama (Silver → Gold)."""
+"""Extract trading strategies from chunks using Ollama or Claude API (Silver → Gold)."""
 from __future__ import annotations
 import json
 import re
 from pathlib import Path
 from typing import Callable
-
-import ollama
 
 from .models import Chunk, Strategy
 
@@ -47,6 +45,35 @@ def _parse_json(text: str) -> dict:
     raise ValueError("No JSON in response")
 
 
+def _call_ollama(model: str, base_url: str, temperature: float, timeout: int, text: str) -> dict:
+    import ollama
+    client = ollama.Client(host=base_url, timeout=timeout)
+    chunks = client.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": _USER_TPL.format(text=text)},
+        ],
+        options={"temperature": temperature},
+        stream=True,
+    )
+    content = "".join(c.message.content for c in chunks)
+    return _parse_json(content)
+
+
+def _call_claude(api_key: str, model: str, temperature: float, text: str) -> dict:
+    import anthropic
+    client = anthropic.Anthropic(api_key=api_key)
+    resp = client.messages.create(
+        model=model,
+        max_tokens=1024,
+        temperature=temperature,
+        system=_SYSTEM,
+        messages=[{"role": "user", "content": _USER_TPL.format(text=text)}],
+    )
+    return _parse_json(resp.content[0].text)
+
+
 def extract_all(
     silver_dir: Path,
     gold_dir: Path,
@@ -58,9 +85,10 @@ def extract_all(
     log: Callable[[str], None] = print,
     on_progress: Callable[[int, int], None] | None = None,
     stop_check: Callable[[], bool] = lambda: False,
+    backend: str = "ollama",
+    claude_api_key: str = "",
 ) -> list[Strategy]:
     gold_dir.mkdir(parents=True, exist_ok=True)
-    client = ollama.Client(host=base_url, timeout=timeout)
     all_saved: list[Strategy] = []
 
     silver_files = sorted(silver_dir.glob("*.json"))
@@ -83,15 +111,10 @@ def extract_all(
             if stop_check():
                 break
             try:
-                resp = client.chat(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": _SYSTEM},
-                        {"role": "user", "content": _USER_TPL.format(text=chunk.text)},
-                    ],
-                    options={"temperature": temperature},
-                )
-                data = _parse_json(resp["message"]["content"])
+                if backend == "claude":
+                    data = _call_claude(claude_api_key, model, temperature, chunk.text)
+                else:
+                    data = _call_ollama(model, base_url, temperature, timeout, chunk.text)
             except Exception as e:
                 log(f"    chunk {chunk.chunk_id}: {e}")
                 continue

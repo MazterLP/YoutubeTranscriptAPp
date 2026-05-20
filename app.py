@@ -11,6 +11,7 @@ Two tabs:
 from __future__ import annotations
 
 import calendar
+import os
 import queue
 import sys
 from datetime import date as Date
@@ -34,6 +35,14 @@ from pipeline.orchestrator import Config, Orchestrator
 from pipeline.utils import channel_folder_name
 
 APP_DIR = Path(__file__).parent.resolve()
+
+# Load .env if present
+_env_file = APP_DIR / ".env"
+if _env_file.exists():
+    for _line in _env_file.read_text().splitlines():
+        if "=" in _line and not _line.startswith("#"):
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
 DEFAULT_OUTPUT = APP_DIR / "output"
 DEFAULT_COOKIES = APP_DIR / "cookies.txt"
 DEFAULT_SILVER = APP_DIR / "output" / "silver"
@@ -93,6 +102,9 @@ class App:
         self.var_confidence = StringVar(value="0.6")
         self.var_embed_model = StringVar(value="all-MiniLM-L6-v2")
         self.var_query = StringVar()
+        self.var_backend = StringVar(value="ollama")
+        self.var_claude_api_key = StringVar(value=os.environ.get("ANTHROPIC_API_KEY", ""))
+        self.var_claude_model = StringVar(value="claude-sonnet-4-6")
 
         self._build_ui()
         if APP_ICON.exists():
@@ -234,23 +246,45 @@ class App:
              lambda: self._pick_dir(self.var_strat_out))
         paths_frm.columnconfigure(1, weight=1)
 
-        # Ollama settings
-        ollama_frm = ttk.LabelFrame(parent, text="Ollama / Embeddings")
-        ollama_frm.pack(fill="x", padx=10, pady=4)
+        # LLM Backend settings
+        llm_frm = ttk.LabelFrame(parent, text="LLM Backend")
+        llm_frm.pack(fill="x", padx=10, pady=4)
 
-        ttk.Label(ollama_frm, text="Model:").grid(row=0, column=0, sticky="e", **pad)
-        ttk.Entry(ollama_frm, textvariable=self.var_ollama_model, width=18).grid(
+        ttk.Label(llm_frm, text="Backend:").grid(row=0, column=0, sticky="e", **pad)
+        ttk.Radiobutton(llm_frm, text="Ollama (local)", variable=self.var_backend,
+                        value="ollama", command=self._toggle_backend).grid(
             row=0, column=1, sticky="w", **pad)
-        ttk.Label(ollama_frm, text="URL:").grid(row=0, column=2, sticky="e", **pad)
-        ttk.Entry(ollama_frm, textvariable=self.var_ollama_url, width=28).grid(
-            row=0, column=3, sticky="w", **pad)
-        ttk.Label(ollama_frm, text="Min confidence:").grid(row=0, column=4, sticky="e", **pad)
-        ttk.Entry(ollama_frm, textvariable=self.var_confidence, width=6).grid(
-            row=0, column=5, sticky="w", **pad)
+        ttk.Radiobutton(llm_frm, text="Claude API", variable=self.var_backend,
+                        value="claude", command=self._toggle_backend).grid(
+            row=0, column=2, sticky="w", **pad)
 
-        ttk.Label(ollama_frm, text="Embed model:").grid(row=1, column=0, sticky="e", **pad)
-        ttk.Entry(ollama_frm, textvariable=self.var_embed_model, width=28).grid(
-            row=1, column=1, columnspan=2, sticky="w", **pad)
+        # Ollama row
+        ttk.Label(llm_frm, text="Ollama model:").grid(row=1, column=0, sticky="e", **pad)
+        self._e_ollama_model = ttk.Entry(llm_frm, textvariable=self.var_ollama_model, width=18)
+        self._e_ollama_model.grid(row=1, column=1, sticky="w", **pad)
+        ttk.Label(llm_frm, text="URL:").grid(row=1, column=2, sticky="e", **pad)
+        self._e_ollama_url = ttk.Entry(llm_frm, textvariable=self.var_ollama_url, width=28)
+        self._e_ollama_url.grid(row=1, column=3, sticky="w", **pad)
+
+        # Claude API row
+        ttk.Label(llm_frm, text="Claude model:").grid(row=2, column=0, sticky="e", **pad)
+        self._e_claude_model = ttk.Entry(llm_frm, textvariable=self.var_claude_model, width=22)
+        self._e_claude_model.grid(row=2, column=1, columnspan=1, sticky="w", **pad)
+        ttk.Label(llm_frm, text="API Key:").grid(row=2, column=2, sticky="e", **pad)
+        self._e_claude_key = ttk.Entry(llm_frm, textvariable=self.var_claude_api_key,
+                                        width=36, show="*")
+        self._e_claude_key.grid(row=2, column=3, sticky="we", **pad)
+
+        # Shared settings
+        ttk.Label(llm_frm, text="Min confidence:").grid(row=3, column=0, sticky="e", **pad)
+        ttk.Entry(llm_frm, textvariable=self.var_confidence, width=6).grid(
+            row=3, column=1, sticky="w", **pad)
+        ttk.Label(llm_frm, text="Embed model:").grid(row=3, column=2, sticky="e", **pad)
+        ttk.Entry(llm_frm, textvariable=self.var_embed_model, width=28).grid(
+            row=3, column=3, sticky="w", **pad)
+        llm_frm.columnconfigure(3, weight=1)
+
+        self._toggle_backend()  # set initial state
 
         # Pipeline buttons
         pipeline_frm = ttk.LabelFrame(parent, text="Pipeline")
@@ -300,6 +334,15 @@ class App:
         self.strat_log.pack(fill=BOTH, expand=True, padx=4, pady=4)
 
     # ── strategy tab helpers ──────────────────────────────────────────────────
+    def _toggle_backend(self) -> None:
+        is_ollama = self.var_backend.get() == "ollama"
+        ollama_state = NORMAL if is_ollama else DISABLED
+        claude_state = DISABLED if is_ollama else NORMAL
+        self._e_ollama_model.configure(state=ollama_state)
+        self._e_ollama_url.configure(state=ollama_state)
+        self._e_claude_model.configure(state=claude_state)
+        self._e_claude_key.configure(state=claude_state)
+
     def _make_strat_cfg(self):
         from pipeline.strategy.orchestrator import StrategyConfig
         try:
@@ -309,6 +352,10 @@ class App:
         bronze = Path(self.var_bronze.get())
         if not bronze.exists():
             self._strat_log_line(f"ERROR: bronze folder not found: {bronze}")
+            return None
+        backend = self.var_backend.get()
+        if backend == "claude" and not self.var_claude_api_key.get().strip():
+            self._strat_log_line("ERROR: Claude API key is required when using Claude backend.")
             return None
         return StrategyConfig(
             bronze_dir=bronze,
@@ -321,6 +368,9 @@ class App:
             ollama_base_url=self.var_ollama_url.get(),
             min_confidence=conf,
             embed_model=self.var_embed_model.get(),
+            backend=backend,
+            claude_api_key=self.var_claude_api_key.get().strip(),
+            claude_model=self.var_claude_model.get(),
         )
 
     def _strat_set_running(self, running: bool) -> None:
